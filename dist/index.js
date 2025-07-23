@@ -89,6 +89,9 @@ async function companyAgent(companyName) {
         console.log(message);
         auditLog.push(message);
     };
+    const step1token = [];
+    const step2token = [];
+    const totalStartTime = process.hrtime.bigint();
     log(`\n==================================================`);
     log(`エージェント起動: 対象 = "${companyName}"`);
     log(`==================================================`);
@@ -97,7 +100,9 @@ async function companyAgent(companyName) {
     const normalizedCompanyName = companyName.trim();
     if (knowledgeBase[normalizedCompanyName] && knowledgeBase[normalizedCompanyName].report) {
         log(`  > [記憶] 過去の完全な調査記録を発見しました！キャッシュから応答します。`);
-        log(`\n[成功] レポート生成完了！（キャッシュより）`);
+        const totalEndTime = process.hrtime.bigint();
+        const totalDuration = Number(totalEndTime - totalStartTime) / 1000000000;
+        log(`\n[成功] レポート生成完了！（キャッシュより） - 合計処理時間: ${totalDuration.toFixed(2)}秒`);
         return {
             status: "success",
             report: knowledgeBase[normalizedCompanyName].report,
@@ -107,17 +112,28 @@ async function companyAgent(companyName) {
     }
     log(`  > [記憶] 過去の調査記録はありません。ライブ調査に移行します。`);
     try {
+        const step1StartTime = process.hrtime.bigint();
         log(`\n[フェーズ2, ステップ1] 公式サイトURL特定プロセス開始...`);
         const findUrlPrompt = `
-      // [SYSTEM INSTRUCTIONS - ENGLISH]
-      // ROLE: You are a high-precision corporate investigator. Your mission is to find the official website URL for a given company name AND its exact address.
-      // CRITICAL RULES:
-      // 1. You MUST use the googleSearch tool. Your search queries must be in Japanese and include both the company name and the address.
-      // 2. Your ONLY GOAL is to find a website that contains an address that is an EXACT or VERY CLOSE match to the input address.
-      // 3. If you find a potential website, you MUST first verify its address. If the address does not match the input address, DISCARD that website immediately, even if the name is similar.
-      // 4. If you cannot find a website that strictly matches the provided address on the first page of search results, you MUST return the single, uppercase word "NONE".
-      // 5. Your final output MUST be ONLY the URL itself or the word "NONE". Do not include any other text.
-      // 6. Think in English.
+    // [SYSTEM INSTRUCTIONS - ENGLISH]
+    // === CORE MISSION & PHILOSOPHY ===
+    // Your primary and most important job is to find a URL that EXACTLY matches the company name AND address provided by the user.
+    // Providing a URL with a different company name or address will confuse the user, so this must be avoided at all costs.
+    // If you cannot find a URL that perfectly matches the user's input, you MUST immediately return "NONE".
+    //
+    // ROLE: You are a high-precision corporate investigator. Your mission is to find the official website URL for a given company name AND its exact address.
+    //
+    // ABSOLUTE CRITICAL RULES:
+    // 1.  You have two tools at your disposal: googleSearch and urlContext.
+    // 2.  Your first step is to use googleSearch to find potential website URLs. Your search queries must be in Japanese and include the address and the company name with keywords like "会社概要".
+    // 3.  If googleSearch provides a potential URL (even a redirect URL), your second step is to use the urlContext tool on that URL to verify its content.
+    // 4.  Your ONLY GOAL is to confirm, using urlContext, that the website's content contains an address that is an EXACT or a VERY CLOSE STRING MATCH to the input address.
+    // 5.  You are only authorized to output a URL if the company name AND address found on the website are an EXACT or VERY CLOSE match to the user's input:${companyName}. "VERY CLOSE" only applies to minor formatting differences. A different company name or a different city is a FAILED verification.
+    // 6.  **Special Protocol for Mismatched Information:** If you encounter a situation where the **address matches** but the **company name is slightly different** (e.g., a trade name or "doing business as" name), you are authorized to perform **one final, additional googleSearch**. This secondary search should use new keywords found on the website (like the trade name) to find objective, third-party evidence (e.g., news articles, business directories) that confirms the two companies are the same entity. Only if you find such conclusive evidence are you authorized to judge the site as a "MATCH". 
+    // 7.  If you can confirm a matching address via urlContext, you MUST output the confirmed URL.
+    // 8.  If you cannot find any potential websites, or if urlContext fails to confirm a matching address, you MUST return the single, uppercase word "NONE".
+    // 9.  Your final output MUST be ONLY the URL itself or the word "NONE".
+    // 10.  You MUST think in English.
 
       // [EXAMPLES]
       // Input: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
@@ -130,25 +146,13 @@ async function companyAgent(companyName) {
       // Input: ${companyName}
       // Output:
     `;
-        /*
-          【日本語訳】
-          // [システム指示 - 英語]
-          // 役割： あなたは、与えられた企業名「と」「その正確な住所」に対する、公式サイトのURLを見つけ出す、高精度な企業調査官です。
-          //【最重要ルール】
-          // 1. あなたは必ずgoogleSearchツールを使わなければならない。検索クエリは日本語で、会社名と住所の両方を含めなさい。
-          // 2. あなたの唯一の目標は、入力された住所と「完全一致」または「極めて酷似」する住所を含んだウェブサイトを見つけることである。
-          // 3. もしウェブサイトの候補を見つけたら、あなたはまずその住所を確認しなければならない。もし住所が入力住所と一致しないなら、たとえ名前が似ていても、そのウェブサイトは即座に棄却せよ。
-          // 4. もし、提供された住所と厳密に一致するウェブサイトを、検索結果の1ページ目で見つけられない場合は、必ず、大文字の単語「NONE」を返しなさい。
-          // 5. あなたの最終的な出力は、URLそのもの、または単語「NONE」の、どちらか「のみ」でなければならない。その他のテキストを一切含めてはいけない。
-          // 6. 思考は英語で行いなさい。
-        */
-        log('findUrlPrompt');
+        log("# [step1 findUrlPrompt]");
         log(findUrlPrompt);
         const urlResult = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: [{ role: "user", parts: [{ text: findUrlPrompt }] }],
             config: {
-                tools: [{ googleSearch: {} }],
+                tools: [{ googleSearch: {} }, { urlContext: {} }],
                 temperature: 0.0,
                 thinkingConfig: {
                     includeThoughts: true,
@@ -163,14 +167,14 @@ async function companyAgent(companyName) {
                     for (const part of candidate.content.parts) {
                         if (part.thought && typeof part.text === 'string') {
                             const thoughtText = `  > [AIの思考ログ - ステップ1] \n---\n${part.text}\n---`;
-                            // log(thoughtText);
-                            step1Thoughts.push(part.text);
+                            log(thoughtText);
+                            step1Thoughts.push(thoughtText);
                         }
                     }
                 }
             }
         }
-        log(`\n--- [ステップ1 トークン会計] ---`);
+        //log(`\n--- [ステップ1 トークン会計] ---`);
         if (urlResult.usageMetadata) {
             const { promptTokenCount, candidatesTokenCount, totalTokenCount } = urlResult.usageMetadata;
             let thoughtTokenCount = 0;
@@ -192,11 +196,10 @@ async function companyAgent(companyName) {
                 }
             }
             const outputTokenCount = (totalTokenCount ?? 0) - (promptTokenCount ?? 0) - thoughtTokenCount;
-            log(`  > 入力トークン (Prompt Tokens): ${promptTokenCount}`);
-            log(`  > 思考トークン (Thought Tokens): ${thoughtTokenCount}`);
-            log(`  > 出力トークン (Final Output Tokens): ${outputTokenCount}`);
-            log(`  > -----------------------------------`);
-            log(`  > 合計トークン (Total Tokens): ${totalTokenCount}`);
+            step1token.push(promptTokenCount ?? 0);
+            step1token.push(thoughtTokenCount ?? 0);
+            step1token.push(outputTokenCount ?? 0);
+            step1token.push(totalTokenCount ?? 0);
         }
         const urlText = urlResult.text;
         log(`  > [AIの最終応答] モデルからの生応答（URL特定）: "${urlText}"`);
@@ -213,6 +216,9 @@ async function companyAgent(companyName) {
         let initialUrl = uniqueUrls[0];
         initialUrl = initialUrl.replace(/[.,\)]+$/, "");
         log(`  > [プログラムの成果] 抽出・クリーンアップされたURL: ${initialUrl}`);
+        const step1EndTime = process.hrtime.bigint();
+        const step1Duration = Number(step1EndTime - step1StartTime) / 1000000000;
+        const step1_5_StartTime = process.hrtime.bigint();
         log(`\n[フェーズ2, ステップ1.5] リダイレクト解決プロセス開始...`);
         let finalUrl = initialUrl;
         if (initialUrl.includes("vertexaisearch.cloud.google.com")) {
@@ -227,18 +233,24 @@ async function companyAgent(companyName) {
             }
         }
         log(`  > [確定情報] 最終的な公式サイトURL: ${finalUrl}`);
+        const step1_5_EndTime = process.hrtime.bigint();
+        const step1_5_Duration = Number(step1_5_EndTime - step1_5_StartTime) / 1000000000;
+        const step2StartTime = process.hrtime.bigint();
         log(`\n[フェーズ2, ステップ2] 詳細情報抽出プロセス開始...`);
         const extractInfoPrompt = `
-      // [SYSTEM INSTRUCTIONS - ENGLISH]
-      // ROLE: You are a senior business analyst tasked with completing a final intelligence report. You will inherit the research findings from a junior agent.
-      // CONSTRAINTS:
-      // 1. You MUST carefully review the "JUNIOR AGENT'S THOUGHT LOG" below to fully understand the investigation's context. This log explains how the TARGET URL was identified.
-      // 2. Based on this context, your primary mission is to conduct a thorough investigation of the entire website at the "TARGET URL". You should prioritize finding pages with Japanese names like "会社概要", "企業情報", or "About Us".
-      // 3. You are authorized to use the googleSearch tool to supplement your findings if the TARGET URL lacks information, but the TARGET URL is your primary source.
-      // 4. Your final output MUST be ONLY a JSON object that strictly adheres to the "OUTPUT JSON STRUCTURE". Do not include any introductory text, concluding remarks, or markdown like \`\`\`json.
-      // 5. Think in English. Formulate your research plan and analyze findings in English. However, your final JSON values MUST be in Japanese as you are reporting for a Japanese client.
-
-      // ---
+    // [SYSTEM INSTRUCTIONS - ENGLISH]
+    // ROLE: You are an elite business analyst. Your mission is to create a factual intelligence report by leveraging all available tools.
+    //
+    // ABSOLUTE CRITICAL RULES:
+    // 1.  Your primary investigation target is the company associated with the "TARGET URL". This URL is your most important clue.
+    // 2.  You are equipped with two powerful tools: googleSearch and urlContext. You are authorized to use them as you see fit to accomplish your mission.
+    // 3.  A recommended strategy is to first use googleSearch to gather broad information and identify key pages (like "会社概要","アクセス","お問い合わせ","連絡先"). If you find a direct, credible page, you should then use urlContext to perform a deep analysis of that specific page.
+    // 4.  To find the "Email", you MUST pay special attention to pages with Japanese names like "お問い合わせ" (Contact Us) or "連絡先" (Contact Info). If you find such a page, meticulously inspect its HTML source for any "<a>" tags containing a "mailto:" link, as this is a high-probability indicator of an email address # use urlContext.
+    // 5.  You MUST critically verify all information. Ensure that any data gathered via googleSearch truly belongs to the company at the "TARGET URL". Cross-reference facts like the address to avoid hallucinations.
+    // 6.  Your final output MUST be ONLY a JSON object that strictly adheres to the "OUTPUT JSON STRUCTURE". Do not include any introductory text, concluding remarks, or markdown like \`\`\`json.
+    // 7.  For any information that cannot be found after a thorough investigation using all your tools, you MUST use the Japanese phrase "情報なし". Do not guess or fabricate information.
+    // 8.  You MUST think in English. Your search queries and final JSON values MUST be in Japanese, as you are reporting to a Japanese client.
+    // ---
       // [JUNIOR AGENT'S THOUGHT LOG (Context for URL identification)]
       // ${step1Thoughts.join('\n\n')}
       // ---
@@ -261,24 +273,11 @@ async function companyAgent(companyName) {
       //   "strengths": "競合と比較した企業の強みや独自性（string）"
       // }
     `;
-        /*
-          【日本語訳】
-          // [システム指示 - 英語]
-          // 役割： あなたは、ジュニアエージェントの調査結果を引き継いで、最終的な情報レポートを完成させる責任を持つ、シニアビジネスアナリストです。
-          // 制約：
-          // 1. あなたは必ず、以下の「ジュニアエージェントの思考ログ」を注意深く読み、調査の文脈を完全に理解しなければなりません。このログは、ターゲットURLがどのように特定されたかを説明しています。
-          // 2. この文脈に基づき、あなたの主要な任務は、「ターゲットURL」にあるウェブサイト全体を徹底的に調査することです。「会社概要」「企業情報」「About Us」のような日本語のページを優先的に探しなさい。
-          // 3. もしターゲットURLの情報が不足している場合、調査結果を補うためにgoogleSearchツールを使用することを許可します。しかし、ターゲットURLがあなたの一番の情報源です。
-          // 4. あなたの最終的な出力は、「出力JSON構造」に厳密に従った、JSONオブジェクト「のみ」でなければなりません。導入文、結論、\`\`\`jsonのようなマークダウンを一切含めてはいけません。
-          // 5. 思考は英語で行いなさい。調査計画の策定や発見事項の分析は英語で行ってください。しかし、あなたは日本の顧客のために報告するので、最終的なJSONの「値」は、必ず日本語でなければなりません。
-        */
-        log('extractInfoPrompt');
-        log(extractInfoPrompt);
         const jsonResult = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: [{ role: "user", parts: [{ text: extractInfoPrompt }] }],
             config: {
-                tools: [{ googleSearch: {} }], //, {urlContext: {}}],
+                tools: [{ googleSearch: {} }, { urlContext: {} }],
                 temperature: 0.0,
                 thinkingConfig: {
                     includeThoughts: true,
@@ -290,6 +289,7 @@ async function companyAgent(companyName) {
                 ]
             }
         });
+        const step2Thoughts = [];
         if (jsonResult.candidates && jsonResult.candidates.length > 0) {
             for (const candidate of jsonResult.candidates) {
                 if (candidate.content && candidate.content.parts) {
@@ -297,12 +297,13 @@ async function companyAgent(companyName) {
                         if (part.thought && typeof part.text === 'string') {
                             const thoughtText = `  > [AIの思考ログ - ステップ2] \n---\n${part.text}\n---`;
                             //log(thoughtText);
+                            step2Thoughts.push(thoughtText);
                         }
                     }
                 }
             }
         }
-        log(`\n--- [ステップ2 トークン会計] ---`);
+        //log(`\n--- [ステップ2 トークン会計] ---`);
         if (jsonResult.usageMetadata) {
             const { promptTokenCount, candidatesTokenCount, totalTokenCount } = jsonResult.usageMetadata;
             let thoughtTokenCount = 0;
@@ -324,11 +325,10 @@ async function companyAgent(companyName) {
                 }
             }
             const outputTokenCount = (totalTokenCount ?? 0) - (promptTokenCount ?? 0) - thoughtTokenCount;
-            log(`  > 入力トークン (Prompt Tokens): ${promptTokenCount}`);
-            log(`  > 思考トークン (Thought Tokens): ${thoughtTokenCount}`);
-            log(`  > 出力トークン (Final Output Tokens): ${outputTokenCount}`);
-            log(`  > -----------------------------------`);
-            log(`  > 合計トークン (Total Tokens): ${totalTokenCount}`);
+            step2token.push(promptTokenCount ?? 0);
+            step2token.push(thoughtTokenCount ?? 0);
+            step2token.push(outputTokenCount ?? 0);
+            step2token.push(totalTokenCount ?? 0);
         }
         const responseText = jsonResult.text;
         log(`  > [AIの最終応答] モデルからの生応答（JSON抽出）: ${responseText}`);
@@ -355,6 +355,8 @@ async function companyAgent(companyName) {
             log(`  > [AIの能力限界] モデルは意図的にエラーを報告しました: ${parsedJson.error}`);
             return { status: "error", message: `レポートを生成できませんでした。モデルからの報告: ${parsedJson.error}`, auditLog };
         }
+        const step2EndTime = process.hrtime.bigint();
+        const step2Duration = Number(step2EndTime - step2StartTime) / 1000000000;
         log(`\n[フェーズ3] 記憶の形成プロセス開始...`);
         const newKnowledgeEntry = {
             companyName: normalizedCompanyName,
@@ -365,7 +367,37 @@ async function companyAgent(companyName) {
         };
         knowledgeBase[normalizedCompanyName] = newKnowledgeEntry;
         saveKnowledgeBase(knowledgeBase, log);
-        log(`\n[成功] レポート生成完了！（ライブ調査より）`);
+        const totalEndTime = process.hrtime.bigint();
+        const totalDuration = Number(totalEndTime - totalStartTime) / 1000000000;
+        log('\n\n---\n\n# [step1 findUrlPrompt]');
+        log(findUrlPrompt);
+        log('\n\n---\n\n# [step1 AI Thoughts]');
+        for (const thought of step1Thoughts) {
+            log(thought);
+        }
+        log('\n\n---\n\n# [step2 extractInfoPrompt]');
+        log(extractInfoPrompt);
+        log('\n\n---\n\n# [step2 AI Thoughts]');
+        for (const thought of step2Thoughts) {
+            log(thought);
+        }
+        log(`\n\n---\n\n[成功] レポート生成完了！（ライブ調査より）`);
+        log(` > [ステップ1 完了]   処理時間: ${step1Duration.toFixed(2)}秒`);
+        log(` > [ステップ1.5 完了] 処理時間: ${step1_5_Duration.toFixed(2)}秒`);
+        log(` > [ステップ2 完了]   処理時間: ${step2Duration.toFixed(2)}秒`);
+        log(` > [全ステップ 完了]  処理時間: ${totalDuration.toFixed(2)}秒`);
+        log(`\n--- [ステップ1 トークン会計] ---`);
+        log(`  > 入力トークン (Prompt Tokens): ${step1token[0]}`);
+        log(`  > 思考トークン (Thought Tokens): ${step1token[1]}`);
+        log(`  > 出力トークン (Final Output Tokens): ${step1token[2]}`);
+        log(`  > -----------------------------------`);
+        log(`  > 合計トークン (Total Tokens): ${step1token[3]}`);
+        log(`\n--- [ステップ2 トークン会計] ---`);
+        log(`  > 入力トークン (Prompt Tokens): ${step2token[0]}`);
+        log(`  > 思考トークン (Thought Tokens): ${step2token[1]}`);
+        log(`  > 出力トークン (Final Output Tokens): ${step2token[2]}`);
+        log(`  > -----------------------------------`);
+        log(`  > 合計トークン (Total Tokens): ${step2token[3]}`);
         return {
             status: "success",
             report: parsedJson,
@@ -374,7 +406,9 @@ async function companyAgent(companyName) {
         };
     }
     catch (error) {
-        log(`\n[致命的エラー] エージェント実行中に予期せぬエラーが発生しました。`);
+        const totalEndTime = process.hrtime.bigint();
+        const totalDuration = Number(totalEndTime - totalStartTime) / 1000000000;
+        log(`\n[致命的エラー] エージェント実行中に予期せぬエラーが発生しました。 - 合計処理時間: ${totalDuration.toFixed(2)}秒`);
         console.error(error);
         return { status: "error", message: `レポートの生成中にエラーが発生しました。サーバーのログを確認してください。`, auditLog };
     }
@@ -398,8 +432,8 @@ async function main() {
         console.error("\n--- エラー ---");
         console.error(result.message);
     }
-    console.log("\n--- 監査ログ ---");
-    console.log(result.auditLog.join('\n'));
+    //console.log("\n--- 監査ログ ---");
+    //console.log(result.auditLog.join('\n'));
 }
 main().catch(error => {
     console.error("\n[スクリプト致命的エラー] 実行に失敗しました。", error);
