@@ -50,6 +50,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
     throw new Error("環境変数 GEMINI_API_KEY が設定されていません。");
 }
+// 新SDKの作法でクライアントを初期化
 const ai = new genai_1.GoogleGenAI({ apiKey: GEMINI_API_KEY });
 // -----------------------------------------------------------------------------
 // 1. 知識ベース（記憶）の操作関数
@@ -108,27 +109,27 @@ async function companyAgent(companyName) {
     try {
         log(`\n[フェーズ2, ステップ1] 公式サイトURL特定プロセス開始...`);
         const findUrlPrompt = `
-    // [SYSTEM INSTRUCTIONS - ENGLISH]
-    // ROLE: You are a high-precision corporate investigator. Your mission is to find the official website URL for a given company name AND its exact address.
-    // CRITICAL RULES:
-    // 1. You MUST use the googleSearch tool. Your search queries must be in Japanese and include both the company name and the address.
-    // 2. Your ONLY GOAL is to find a website that contains an address that is an EXACT or VERY CLOSE match to the input address.
-    // 3. If you find a potential website, you MUST first verify its address. If the address does not match the input address, DISCARD that website immediately, even if the name is similar.
-    // 4. If you cannot find a website that strictly matches the provided address on the first page of search results, you MUST return the single, uppercase word "NONE".
-    // 5. Your final output MUST be ONLY the URL itself or the word "NONE". Do not include any other text.
-    // 6. Think in English.
-  
-    // [EXAMPLES]
-    // Input: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
-    // Output: https://global.toyota/jp/
-  
-    // Input: 株式会社むらまつ 大阪府大阪市西成区花園北２丁目６番６号
-    // Output: NONE
-  
-    // [TASK]
-    // Input: ${companyName}
-    // Output:
-  `;
+      // [SYSTEM INSTRUCTIONS - ENGLISH]
+      // ROLE: You are a high-precision corporate investigator. Your mission is to find the official website URL for a given company name AND its exact address.
+      // CRITICAL RULES:
+      // 1. You MUST use the googleSearch tool. Your search queries must be in Japanese and include both the company name and the address.
+      // 2. Your ONLY GOAL is to find a website that contains an address that is an EXACT or VERY CLOSE match to the input address.
+      // 3. If you find a potential website, you MUST first verify its address. If the address does not match the input address, DISCARD that website immediately, even if the name is similar.
+      // 4. If you cannot find a website that strictly matches the provided address on the first page of search results, you MUST return the single, uppercase word "NONE".
+      // 5. Your final output MUST be ONLY the URL itself or the word "NONE". Do not include any other text.
+      // 6. Think in English.
+
+      // [EXAMPLES]
+      // Input: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
+      // Output: https://global.toyota/jp/
+      
+      // Input: 株式会社むらまつ 大阪府大阪市西成区花園北２丁目６番６号
+      // Output: NONE
+      
+      // [TASK]
+      // Input: ${companyName}
+      // Output:
+    `;
         /*
           【日本語訳】
           // [システム指示 - 英語]
@@ -149,13 +150,59 @@ async function companyAgent(companyName) {
             config: {
                 tools: [{ googleSearch: {} }],
                 temperature: 0.0,
+                thinkingConfig: {
+                    includeThoughts: true,
+                    thinkingBudget: -1
+                }
             },
         });
+        const step1Thoughts = [];
+        if (urlResult.candidates && urlResult.candidates.length > 0) {
+            for (const candidate of urlResult.candidates) {
+                if (candidate.content && candidate.content.parts) {
+                    for (const part of candidate.content.parts) {
+                        if (part.thought && typeof part.text === 'string') {
+                            const thoughtText = `  > [AIの思考ログ - ステップ1] \n---\n${part.text}\n---`;
+                            // log(thoughtText);
+                            step1Thoughts.push(part.text);
+                        }
+                    }
+                }
+            }
+        }
+        log(`\n--- [ステップ1 トークン会計] ---`);
+        if (urlResult.usageMetadata) {
+            const { promptTokenCount, candidatesTokenCount, totalTokenCount } = urlResult.usageMetadata;
+            let thoughtTokenCount = 0;
+            if (urlResult.candidates && urlResult.candidates.length > 0) {
+                for (const candidate of urlResult.candidates) {
+                    if (candidate.content && candidate.content.parts) {
+                        for (const part of candidate.content.parts) {
+                            if (part.thought) {
+                                const thoughtTokens = await ai.models.countTokens({
+                                    model: "gemini-2.5-flash",
+                                    contents: [{ role: "model", parts: [part] }]
+                                });
+                                if (typeof thoughtTokens.totalTokens === 'number') {
+                                    thoughtTokenCount += thoughtTokens.totalTokens;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            const outputTokenCount = (totalTokenCount ?? 0) - (promptTokenCount ?? 0) - thoughtTokenCount;
+            log(`  > 入力トークン (Prompt Tokens): ${promptTokenCount}`);
+            log(`  > 思考トークン (Thought Tokens): ${thoughtTokenCount}`);
+            log(`  > 出力トークン (Final Output Tokens): ${outputTokenCount}`);
+            log(`  > -----------------------------------`);
+            log(`  > 合計トークン (Total Tokens): ${totalTokenCount}`);
+        }
         const urlText = urlResult.text;
         log(`  > [AIの最終応答] モデルからの生応答（URL特定）: "${urlText}"`);
         if (typeof urlText !== 'string' || urlText.trim() === '' || urlText.trim().toUpperCase() === 'NONE') {
-            log(`  > [AIの能力限界] モデルは公式サイトを特定できませんでした。`);
-            return { status: "error", message: "決定的な公式サイトが見つかりませんでした...", auditLog };
+            log(`  > [AIの能力限界] モデルは、与えられた情報に一致する公式サイトを特定できませんでした。`);
+            return { status: "error", message: "指定された会社名と住所に一致する、信頼できる公式サイトが見つかりませんでした。入力情報をご確認ください。", auditLog };
         }
         const urlMatches = urlText.match(/https?:\/\/[^\s"<>]+/g);
         if (!urlMatches || urlMatches.length === 0) {
@@ -182,74 +229,106 @@ async function companyAgent(companyName) {
         log(`  > [確定情報] 最終的な公式サイトURL: ${finalUrl}`);
         log(`\n[フェーズ2, ステップ2] 詳細情報抽出プロセス開始...`);
         const extractInfoPrompt = `
-    // [SYSTEM INSTRUCTIONS - ENGLISH]
-    // ROLE: You are an elite business analyst. Your mission is to create a factual report using ONLY the googleSearch tool.
-    // CRITICAL RULES:
-    // 1. Your primary mission is to investigate the company associated with the "TARGET URL". Use Japanese keywords like "会社概要", "企業情報" combined with the company name to find the most accurate information.
-    // 2. Your final output MUST be ONLY a JSON object that strictly adheres to the "OUTPUT JSON STRUCTURE".
-    // 3. For any information that cannot be found through your search, you MUST use the Japanese phrase "情報なし".
-    // 4. Think in English. Your search queries and final JSON values MUST be in Japanese.
+      // [SYSTEM INSTRUCTIONS - ENGLISH]
+      // ROLE: You are a senior business analyst tasked with completing a final intelligence report. You will inherit the research findings from a junior agent.
+      // CONSTRAINTS:
+      // 1. You MUST carefully review the "JUNIOR AGENT'S THOUGHT LOG" below to fully understand the investigation's context. This log explains how the TARGET URL was identified.
+      // 2. Based on this context, your primary mission is to conduct a thorough investigation of the entire website at the "TARGET URL". You should prioritize finding pages with Japanese names like "会社概要", "企業情報", or "About Us".
+      // 3. You are authorized to use the googleSearch tool to supplement your findings if the TARGET URL lacks information, but the TARGET URL is your primary source.
+      // 4. Your final output MUST be ONLY a JSON object that strictly adheres to the "OUTPUT JSON STRUCTURE". Do not include any introductory text, concluding remarks, or markdown like \`\`\`json.
+      // 5. Think in English. Formulate your research plan and analyze findings in English. However, your final JSON values MUST be in Japanese as you are reporting for a Japanese client.
 
-    // [TARGET URL - Use this as your primary clue]
-    // ${finalUrl}
+      // ---
+      // [JUNIOR AGENT'S THOUGHT LOG (Context for URL identification)]
+      // ${step1Thoughts.join('\n\n')}
+      // ---
 
-    // [OUTPUT JSON STRUCTURE]
-    // {
-    //   "companyName": "企業の正式名称（string）",
-    //   "officialUrl": "公式サイトのURL（string）",
-    //   "address": "本社の所在地（string）",
-    //   "Industry": "業界（string）",
-    //   "Email": "メールアドレス（string）",
-    //   "TEL": "電話番号（string）",
-    //   "FAX": "ファックス（string）",
-    //   "capital": "出資金額（string）",
-    //   "Founding date": "創業年月（string）",
-    //   "businessSummary": "主要な事業内容の要約（string）",
-    //   "strengths": "競合と比較した企業の強みや独自性（string）"
-    // }
-  `;
+      // [TARGET URL]
+      // ${finalUrl}
+
+      // [OUTPUT JSON STRUCTURE]
+      // {
+      //   "companyName": "企業の正式名称（string）",
+      //   "officialUrl": "公式サイトのURL（string）",
+      //   "address": "本社の所在地（string）",
+      //   "Industry": "業界（string）",
+      //   "Email": "メールアドレス（string）",
+      //   "TEL": "電話番号（string）",
+      //   "FAX": "ファックス（string）",
+      //   "capital": "出資金額（string）",
+      //   "Founding date": "創業年月（string）",
+      //   "businessSummary": "主要な事業内容の要約（string）",
+      //   "strengths": "競合と比較した企業の強みや独自性（string）"
+      // }
+    `;
         /*
-        【日本語訳】
-        // [システム指示 - 英語]
-        // 役割： あなたはシニアビジネスアナリストです。あなたの任務は、提供された公式サイト「のみ」に基づいて、事実に基づいたレポートを作成することです。
-        //【最重要ルール】
-        // - あなたの唯一の情報源は、「ターゲットURL」にあるウェブサイトです。いかなる外部知識、以前の検索結果、その他のウェブサイトも使用してはいけません。与えられたURLに書かれている事実に、忠実でありなさい。
-        // - ウェブサイト上で見つけることができない情報については、必ず、日本語のフレーズ「情報なし」またはそれに類する中立的な表現を、値として使用しなければなりません。
+          【日本語訳】
+          // [システム指示 - 英語]
+          // 役割： あなたは、ジュニアエージェントの調査結果を引き継いで、最終的な情報レポートを完成させる責任を持つ、シニアビジネスアナリストです。
+          // 制約：
+          // 1. あなたは必ず、以下の「ジュニアエージェントの思考ログ」を注意深く読み、調査の文脈を完全に理解しなければなりません。このログは、ターゲットURLがどのように特定されたかを説明しています。
+          // 2. この文脈に基づき、あなたの主要な任務は、「ターゲットURL」にあるウェブサイト全体を徹底的に調査することです。「会社概要」「企業情報」「About Us」のような日本語のページを優先的に探しなさい。
+          // 3. もしターゲットURLの情報が不足している場合、調査結果を補うためにgoogleSearchツールを使用することを許可します。しかし、ターゲットURLがあなたの一番の情報源です。
+          // 4. あなたの最終的な出力は、「出力JSON構造」に厳密に従った、JSONオブジェクト「のみ」でなければなりません。導入文、結論、\`\`\`jsonのようなマークダウンを一切含めてはいけません。
+          // 5. 思考は英語で行いなさい。調査計画の策定や発見事項の分析は英語で行ってください。しかし、あなたは日本の顧客のために報告するので、最終的なJSONの「値」は、必ず日本語でなければなりません。
         */
         log('extractInfoPrompt');
         log(extractInfoPrompt);
-        // ▼▼▼【ここが、最後の「ネットワークエラー」を解決する、最終ロジックです】▼▼▼
-        let jsonResult;
-        const maxRetries = 3;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                log(`  > [AIへの問い合わせ試行 ${attempt}/${maxRetries}]...`);
-                jsonResult = await ai.models.generateContent({
-                    model: "gemini-2.5-flash",
-                    contents: [{ role: "user", parts: [{ text: extractInfoPrompt }] }],
-                    config: {
-                        tools: [{ googleSearch: {} }], //, {urlContext: {}}],
-                        safetySettings: [
-                            { category: genai_1.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: genai_1.HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                            { category: genai_1.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: genai_1.HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                        ]
-                    }
-                });
-                log(`  > [試行 ${attempt} 成功] AIサーバーからの応答を取得しました。`);
-                break;
+        const jsonResult = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [{ role: "user", parts: [{ text: extractInfoPrompt }] }],
+            config: {
+                tools: [{ googleSearch: {} }], //, {urlContext: {}}],
+                temperature: 0.0,
+                thinkingConfig: {
+                    includeThoughts: true,
+                    thinkingBudget: -1
+                },
+                safetySettings: [
+                    { category: genai_1.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: genai_1.HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                    { category: genai_1.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: genai_1.HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                ]
             }
-            catch (error) {
-                log(`  > [試行 ${attempt} 失敗] エラーが発生しました: ${error.message}`);
-                if (attempt === maxRetries) {
-                    log(`  > [リトライ上限] 最大試行回数に達しました。`);
-                    throw error;
+        });
+        if (jsonResult.candidates && jsonResult.candidates.length > 0) {
+            for (const candidate of jsonResult.candidates) {
+                if (candidate.content && candidate.content.parts) {
+                    for (const part of candidate.content.parts) {
+                        if (part.thought && typeof part.text === 'string') {
+                            const thoughtText = `  > [AIの思考ログ - ステップ2] \n---\n${part.text}\n---`;
+                            //log(thoughtText);
+                        }
+                    }
                 }
-                log(`  > 10秒待機して再試行します...`);
-                await new Promise(resolve => setTimeout(resolve, 10000));
             }
         }
-        if (!jsonResult) {
-            throw new Error("API call failed after all retries.");
+        log(`\n--- [ステップ2 トークン会計] ---`);
+        if (jsonResult.usageMetadata) {
+            const { promptTokenCount, candidatesTokenCount, totalTokenCount } = jsonResult.usageMetadata;
+            let thoughtTokenCount = 0;
+            if (jsonResult.candidates && jsonResult.candidates.length > 0) {
+                for (const candidate of jsonResult.candidates) {
+                    if (candidate.content && candidate.content.parts) {
+                        for (const part of candidate.content.parts) {
+                            if (part.thought) {
+                                const thoughtTokens = await ai.models.countTokens({
+                                    model: "gemini-2.5-flash",
+                                    contents: [{ role: "model", parts: [part] }]
+                                });
+                                if (typeof thoughtTokens.totalTokens === 'number') {
+                                    thoughtTokenCount += thoughtTokens.totalTokens;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            const outputTokenCount = (totalTokenCount ?? 0) - (promptTokenCount ?? 0) - thoughtTokenCount;
+            log(`  > 入力トークン (Prompt Tokens): ${promptTokenCount}`);
+            log(`  > 思考トークン (Thought Tokens): ${thoughtTokenCount}`);
+            log(`  > 出力トークン (Final Output Tokens): ${outputTokenCount}`);
+            log(`  > -----------------------------------`);
+            log(`  > 合計トークン (Total Tokens): ${totalTokenCount}`);
         }
         const responseText = jsonResult.text;
         log(`  > [AIの最終応答] モデルからの生応答（JSON抽出）: ${responseText}`);
@@ -280,11 +359,10 @@ async function companyAgent(companyName) {
         const newKnowledgeEntry = {
             companyName: normalizedCompanyName,
             officialUrl: finalUrl,
+            step1Thoughts: step1Thoughts,
             report: parsedJson,
             lastUpdated: new Date().toISOString()
         };
-        // For simplicity, we are not passing step1Thoughts to step2 in this version,
-        // so we don't save it to the knowledge base either.
         knowledgeBase[normalizedCompanyName] = newKnowledgeEntry;
         saveKnowledgeBase(knowledgeBase, log);
         log(`\n[成功] レポート生成完了！（ライブ調査より）`);
@@ -297,12 +375,8 @@ async function companyAgent(companyName) {
     }
     catch (error) {
         log(`\n[致命的エラー] エージェント実行中に予期せぬエラーが発生しました。`);
-        let errorMessage = "レポートの生成中にエラーが発生しました。サーバーのログを確認してください。";
-        if (error.message && (error.message.includes('fetch failed') || error.message.includes('RESOURCE_EXHAUSTED'))) {
-            errorMessage = "ネットワークエラー、またはAPIの利用制限により、AIサーバーとの通信に失敗しました。Cloud Shellの制約、一時的なネットワークの問題、またはAPIの無料利用枠の上限に達した可能性があります。";
-        }
         console.error(error);
-        return { status: "error", message: errorMessage, auditLog };
+        return { status: "error", message: `レポートの生成中にエラーが発生しました。サーバーのログを確認してください。`, auditLog };
     }
 }
 // -----------------------------------------------------------------------------
