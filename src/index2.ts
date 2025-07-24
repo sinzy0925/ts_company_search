@@ -100,7 +100,7 @@ async function companyAgent(companyName: string) {
     // 2. googleSearchで検索した結果、１ページ目に当該企業の公式Webサイトが見つからなければ、即座に中止し以下のJSONのみを出力してください。
     //    { "error": "Company information not found" }
     // 3. ツールを駆使して、粘り強く、最低3回は、検索すること。
-    // 5. 思考は英語で行わなければなりません。
+    // 4. 思考は英語で行わなければなりません。
     // [例]
     // 入力: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
     // 出力: https://global.toyota/jp/
