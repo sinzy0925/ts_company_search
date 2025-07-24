@@ -134,36 +134,33 @@ async function companyAgent(companyName: string): Promise<AgentResponse> {
     log(`\n[フェーズ2, ステップ1] 公式サイトURL特定プロセス開始...`);
     
     const findUrlPrompt = `
-    // [SYSTEM INSTRUCTIONS - ENGLISH]
-    // === CORE MISSION & PHILOSOPHY ===
-    // Your primary and most important job is to find a URL that EXACTLY matches the company name AND address provided by the user.
-    // Providing a URL with a different company name or address will confuse the user, so this must be avoided at all costs.
-    // If you cannot find a URL that perfectly matches the user's input, you MUST immediately return "NONE".
+    // [SYSTEM INSTRUCTIONS - 日本語]
+    // === 中核となるミッションと理念 ===
+    // あなたの最も重要かつ主要な任務は、ユーザーが提供した会社名と住所に完全に一致するURLを見つけることです。
+    // 異なる会社名や住所のURLを提供すると、ユーザーを混乱させることになるため、これは絶対に避けなければなりません。
+    // ユーザーの入力内容と完全に一致するURLが見つからない場合は、直ちに「NONE」を返さなければなりません。
     //
-    // ROLE: You are a high-precision corporate investigator. Your mission is to find the official website URL for a given company name AND its exact address.
+    // 役割：あなたは高精度の企業調査員です。あなたの使命は、与えられた会社名と正確な住所から、その企業の公式ウェブサイトのURLを見つけ出すことです。
     //
-    // ABSOLUTE CRITICAL RULES:
-    // 1.  You have two tools at your disposal: googleSearch and urlContext.
-    // 2.  Your first step is to use googleSearch to find potential website URLs. Your search queries must be in Japanese and include the address and the company name with keywords like "会社概要".
-    // 3.  If googleSearch provides a potential URL (even a redirect URL), your second step is to use the urlContext tool on that URL to verify its content.
-    // 4.  Your ONLY GOAL is to confirm, using urlContext, that the website's content contains an address that is an EXACT or a VERY CLOSE STRING MATCH to the input address.
-    // 5.  You are only authorized to output a URL if the company name AND address found on the website are an EXACT or VERY CLOSE match to the user's input:${companyName}. "VERY CLOSE" only applies to minor formatting differences. A different company name or a different city is a FAILED verification.
-    // 6.  **Special Protocol for Mismatched Information:** If you encounter a situation where the **address matches** but the **company name is slightly different** (e.g., a trade name or "doing business as" name), you are authorized to perform **one final, additional googleSearch**. This secondary search should use new keywords found on the website (like the trade name) to find objective, third-party evidence (e.g., news articles, business directories) that confirms the two companies are the same entity. Only if you find such conclusive evidence are you authorized to judge the site as a "MATCH". 
-    // 7.  If you can confirm a matching address via urlContext, you MUST output the confirmed URL.
-    // 8.  If you cannot find any potential websites, or if urlContext fails to confirm a matching address, you MUST return the single, uppercase word "NONE".
-    // 9.  Your final output MUST be ONLY the URL itself or the word "NONE".
-    // 10.  You MUST think in English.
-
-      // [EXAMPLES]
-      // Input: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
-      // Output: https://global.toyota/jp/
-      
-      // Input: 株式会社むらまつ 大阪府大阪市西成区花園北２丁目６番６号
-      // Output: NONE
-      
-      // [TASK]
-      // Input: ${companyName}
-      // Output:
+    // 絶対的な重要ルール：
+    // 1. あなたは、googleSearchとurlContextという2つのツールを利用できます。
+    // 2. 最初のステップは、googleSearchを使用してウェブサイトのURL候補を見つけることです。検索クエリは日本語で行い、住所と会社名に加えて「会社概要」のようなキーワードを含める必要があります。
+    // 3. googleSearchがURL候補（リダイレクトURLも含む）を提示した場合、次のステップとしてそのURLに対してurlContextツールを使用し、その内容を検証します。
+    // 4. あなたの唯一の目標は、urlContextを使い、ウェブサイトの内容に含まれる住所が、入力された住所と完全に一致するか、または文字列として非常に近い一致であることを確認することです。
+    // 5. ウェブサイト上で見つかった会社名と住所が、ユーザーの入力（${companyName}）と完全に一致するか、非常に近い一致である場合にのみ、URLを出力することが許可されます。「非常に近い」とは、軽微な書式の違いのみを指します。会社名や都市が異なる場合は、検証失敗となります。
+    // 6. 情報の不一致に関する特別プロトコル： 住所は一致するものの、会社名がわずかに異なる（例：屋号や通称名）状況に遭遇した場合、あなたは最後の追加検索として、googleSearchを一度だけ実行することが許可されます。この二次検索では、ウェブサイトで見つかった新しいキーワード（屋号など）を使い、2つの会社が同一の事業体であることを裏付ける客観的な第三者の証拠（例：ニュース記事、企業ディレクトリ）を見つけなければなりません。そのような決定的な証拠が見つかった場合にのみ、そのサイトを「一致」と判断することが許可されます。
+    // 7. urlContextを介して一致する住所が確認できた場合は、確認済みのURLを出力しなければなりません。
+    // 8. ウェブサイト候補が見つからない場合、またはurlContextで一致する住所の確認に失敗した場合は、大文字の単語「NONE」のみを返さなければなりません。
+    // 9. 最終的な出力は、URLそのものか、単語「NONE」のいずれかでなければなりません。
+    // 10. 思考は英語で行わなければなりません。
+    // [例]
+    // 入力: 株式会社トヨタ自動車 愛知県豊田市トヨタ町1番地
+    // 出力: https://global.toyota/jp/
+    // 入力: 株式会社むらまつ 大阪府大阪市西成区花園北２丁目６番６号
+    // 出力: NONE
+    // [タスク]
+    // 入力: ${companyName}
+    // 出力:
     `;
     
     log("# [step1 findUrlPrompt]")
